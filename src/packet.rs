@@ -11,6 +11,61 @@ impl BytePacketBuffer {
         BytePacketBuffer { buf: [0;512], pos: 0 }
     }
 
+    fn read_qname(&mut self, out: &mut String) -> Result<()> {
+        let mut pos = self.pos;
+        let mut jumped = false;
+        // Prevent cycles
+        let max_jumps = 5;
+        let mut curr_jump = 0;
+
+        let mut delimiter = "";
+
+        loop {
+            if curr_jump > max_jumps {
+                return Err(format!("Exceeded jump limit of {}", max_jumps).into());
+            }
+
+            // Get length of label
+            let len = self.peek(pos)?;
+
+            // Jump to another offset
+            if (len & 0xC0) == 0xC0 {
+                if !jumped {
+                    self.set_position(pos+2)?;
+                }
+
+                let b2 = self.peek(pos+1)? as u16;
+                let offset = (((len as u16) ^ 0xC0)) << 8 | b2;
+                pos = offset as usize;
+
+                jumped = true;
+                curr_jump+=1;
+                continue;
+            } else {
+                // Read label
+                
+                // Skip the length
+                pos += 1;
+
+                // End of domain name
+                if len == 0 {
+                    break;
+                }
+
+                out.push_str(delimiter);
+                let str_buf = self.peek_many(pos, len as usize)?;
+                out.push_str(&String::from_utf8_lossy(str_buf).to_lowercase());
+                delimiter = ".";
+                pos += len as usize;
+            }
+        }
+
+        if !jumped {
+            self.set_position(pos)?;
+        }
+        Ok(())
+    }
+
     fn skip(&mut self, amount: usize) -> Result<()> {
         self.pos += amount;
         Ok(())
