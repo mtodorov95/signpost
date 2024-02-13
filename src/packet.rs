@@ -50,6 +50,30 @@ impl DNSPacket {
 
         Ok(result)
     }
+
+    pub fn write(&mut self, buffer: &mut BytePacketBuffer) -> Result<()> {
+        self.header.questions = self.questions.len() as u16;
+        self.header.answers = self.answers.len() as u16;
+        self.header.authoritative_entries = self.authorities.len() as u16;
+        self.header.resource_entries = self.resources.len() as u16;
+
+        self.header.write(buffer)?;
+
+        for question in &self.questions {
+            question.write(buffer)?;
+        }
+        for rec in &self.answers {
+            rec.write(buffer)?;
+        }
+        for rec in &self.authorities {
+            rec.write(buffer)?;
+        }
+        for rec in &self.resources {
+            rec.write(buffer)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -102,9 +126,38 @@ impl DNSRecord {
             }
         }
     }
+
+    pub fn write(&self, buffer: &mut BytePacketBuffer) -> Result<usize> {
+        let start_pos = buffer.pos;
+
+        match *self {
+            DNSRecord::A {
+                ref domain,
+                ref addr,
+                ttl,
+            } => {
+                buffer.write_qname(domain)?;
+                buffer.write_u16(QueryType::A.to_num())?;
+                buffer.write_u16(1)?;
+                buffer.write_u32(ttl)?;
+                buffer.write_u16(4)?;
+
+                let octets = addr.octets();
+                buffer.write_u8(octets[0])?;
+                buffer.write_u8(octets[1])?;
+                buffer.write_u8(octets[2])?;
+                buffer.write_u8(octets[3])?;
+            }
+            DNSRecord::UNKNOWN { .. } => {
+                println!("Skipping record: {:?}", self);
+            }
+        }
+
+        Ok(buffer.pos - start_pos)
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum ResultCode {
     NOERROR = 0,
     FORMERR = 1,
@@ -165,6 +218,15 @@ impl DNSQuestion {
         self.qtype = QueryType::from_num(buffer.read_u16()?);
         // Class
         let _ = buffer.read_u16()?;
+        Ok(())
+    }
+
+    pub fn write(&self, buffer: &mut BytePacketBuffer) -> Result<()> {
+        buffer.write_qname(&self.name)?;
+        let qtype = self.qtype.to_num();
+        buffer.write_u16(qtype)?;
+        buffer.write_u16(1)?;
+
         Ok(())
     }
 }
@@ -232,6 +294,35 @@ impl DNSHeader {
         self.answers = buffer.read_u16()?;
         self.authoritative_entries = buffer.read_u16()?;
         self.resource_entries = buffer.read_u16()?;
+
+        Ok(())
+    }
+}
+
+impl DNSHeader {
+    pub fn write(&self, buffer: &mut BytePacketBuffer) -> Result<()> {
+        buffer.write_u16(self.id)?;
+
+        buffer.write_u8(
+            (self.recursion_desired as u8)
+                | ((self.truncated_message as u8) << 1)
+                | ((self.authoritative_answer as u8) << 2)
+                | (self.opcode << 3)
+                | ((self.response as u8) << 7),
+        )?;
+
+        buffer.write_u8(
+            (self.rescode as u8)
+                | ((self.cheching_disabled as u8) << 4)
+                | ((self.authed_data as u8) << 5)
+                | ((self.z as u8) << 6)
+                | ((self.recursion_available as u8) << 7),
+        )?;
+
+        buffer.write_u16(self.questions)?;
+        buffer.write_u16(self.answers)?;
+        buffer.write_u16(self.authoritative_entries)?;
+        buffer.write_u16(self.resource_entries)?;
 
         Ok(())
     }
@@ -358,5 +449,56 @@ impl BytePacketBuffer {
 
     fn end_of_buf(&self) -> bool {
         self.pos >= self.buf.len()
+    }
+}
+
+impl BytePacketBuffer {
+    /// Write a single byte to the buffer and increment
+    /// the position by one.
+    fn write(&mut self, value: u8) -> Result<()> {
+        if self.end_of_buf() {
+            return Err("end of buffer".into());
+        }
+
+        self.buf[self.pos] = value;
+        self.pos += 1;
+        Ok(())
+    }
+
+    fn write_u8(&mut self, value: u8) -> Result<()> {
+        self.write(value)?;
+        Ok(())
+    }
+
+    fn write_u16(&mut self, value: u16) -> Result<()> {
+        self.write((value >> 8) as u8)?;
+        self.write((value & 0xFF) as u8)?;
+        Ok(())
+    }
+
+    fn write_u32(&mut self, value: u32) -> Result<()> {
+        self.write(((value >> 24) & 0xFF) as u8)?;
+        self.write(((value >> 16) & 0xFF) as u8)?;
+        self.write(((value >> 8) & 0xFF) as u8)?;
+        self.write(((value >> 0) & 0xFF) as u8)?;
+        Ok(())
+    }
+
+    fn write_qname(&mut self, qname: &str) -> Result<()> {
+        for label in qname.split(".") {
+            let len = label.len();
+            if len > 0x3f {
+                return Err("label exceeds 63 characters".into());
+            }
+
+            self.write_u8(len as u8)?;
+            for b in label.as_bytes() {
+                self.write_u8(*b)?;
+            }
+        }
+
+        self.write_u8(0)?;
+
+        Ok(())
     }
 }

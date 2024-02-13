@@ -1,27 +1,49 @@
 use packet::{BytePacketBuffer, DNSPacket, Result};
-use std::fs::File;
-use std::io::Read;
+use std::net::UdpSocket;
+
+use crate::packet::{DNSQuestion, QueryType};
 
 mod packet;
 
 fn main() -> Result<()> {
-    let mut f = File::open("response_packet.txt")?;
+    let name = "google.com";
+    let qtype = QueryType::A;
+
+    // Google public DNS
+    let server = ("8.8.8.8", 53);
+
+    let socket = UdpSocket::bind(("0.0.0.0", 42069))?;
+
+    let mut packet = DNSPacket::new();
+
+    packet.header.id = 1337;
+    packet.header.questions = 1;
+    packet.header.recursion_desired = true;
+    packet
+        .questions
+        .push(DNSQuestion::new(name.to_string(), qtype));
+
     let mut buffer = BytePacketBuffer::new();
-    f.read(&mut buffer.buf)?;
+    packet.write(&mut buffer)?;
 
-    let packet = DNSPacket::from_buffer(&mut buffer)?;
-    println!("{:#?}", packet.header);
+    socket.send_to(&buffer.buf[0..buffer.pos], server)?;
 
-    for q in packet.questions {
+    let mut resp_buffer = BytePacketBuffer::new();
+    socket.recv(&mut resp_buffer.buf)?;
+
+    let resp_packet = DNSPacket::from_buffer(&mut resp_buffer)?;
+    println!("{:#?}", resp_packet.header);
+
+    for q in resp_packet.questions {
         println!("{:#?}", q);
     }
-    for rec in packet.answers {
+    for rec in resp_packet.answers {
         println!("{:#?}", rec);
     }
-    for rec in packet.authorities {
+    for rec in resp_packet.authorities {
         println!("{:#?}", rec);
     }
-    for rec in packet.resources {
+    for rec in resp_packet.resources {
         println!("{:#?}", rec);
     }
 
