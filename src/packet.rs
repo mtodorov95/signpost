@@ -1,4 +1,4 @@
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 type Error = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, Error>;
@@ -89,6 +89,27 @@ pub enum DNSRecord {
         addr: Ipv4Addr,
         ttl: u32,
     },
+    NS {
+        domain: String,
+        host: String,
+        ttl: u32,
+    },
+    CNAME {
+        domain: String,
+        host: String,
+        ttl: u32,
+    },
+    MX {
+        domain: String,
+        priority: u16,
+        host: String,
+        ttl: u32,
+    },
+    AAAA {
+        domain: String,
+        addr: Ipv6Addr,
+        ttl: u32,
+    },
 }
 
 impl DNSRecord {
@@ -113,6 +134,48 @@ impl DNSRecord {
                 );
 
                 Ok(DNSRecord::A { domain, addr, ttl })
+            }
+            QueryType::NS => {
+                let mut host = String::new();
+                buffer.read_qname(&mut host)?;
+
+                Ok(DNSRecord::NS { domain, host, ttl })
+            }
+            QueryType::CNAME => {
+                let mut host = String::new();
+                buffer.read_qname(&mut host)?;
+
+                Ok(DNSRecord::CNAME { domain, host, ttl })
+            }
+            QueryType::MX => {
+                let priority = buffer.read_u16()?;
+                let mut host = String::new();
+                buffer.read_qname(&mut host)?;
+
+                Ok(DNSRecord::MX {
+                    domain,
+                    priority,
+                    host,
+                    ttl,
+                })
+            }
+            QueryType::AAAA => {
+                let addr1 = buffer.read_u32()?;
+                let addr2 = buffer.read_u32()?;
+                let addr3 = buffer.read_u32()?;
+                let addr4 = buffer.read_u32()?;
+                let addr = Ipv6Addr::new(
+                    ((addr1 >> 16) & 0xFFFF) as u16,
+                    ((addr1 >> 0) & 0xFFFF) as u16,
+                    ((addr2 >> 16) & 0xFFFF) as u16,
+                    ((addr2 >> 0) & 0xFFFF) as u16,
+                    ((addr3 >> 16) & 0xFFFF) as u16,
+                    ((addr3 >> 0) & 0xFFFF) as u16,
+                    ((addr4 >> 16) & 0xFFFF) as u16,
+                    ((addr4 >> 0) & 0xFFFF) as u16,
+                );
+
+                Ok(DNSRecord::AAAA { domain, addr, ttl })
             }
             QueryType::UNKNOWN(_) => {
                 buffer.skip(data_len as usize)?;
@@ -147,6 +210,74 @@ impl DNSRecord {
                 buffer.write_u8(octets[1])?;
                 buffer.write_u8(octets[2])?;
                 buffer.write_u8(octets[3])?;
+            }
+            DNSRecord::NS {
+                ref domain,
+                ref host,
+                ttl,
+            } => {
+                buffer.write_qname(domain)?;
+                buffer.write_u16(QueryType::NS.to_num())?;
+                buffer.write_u16(1)?;
+                buffer.write_u32(ttl)?;
+
+                let pos = buffer.pos;
+                buffer.write_u16(0)?;
+
+                buffer.write_qname(host)?;
+                let size = buffer.pos - (pos + 2);
+                buffer.set_u16_at(pos, size as u16)?;
+            }
+            DNSRecord::CNAME {
+                ref domain,
+                ref host,
+                ttl,
+            } => {
+                buffer.write_qname(domain)?;
+                buffer.write_u16(QueryType::CNAME.to_num())?;
+                buffer.write_u16(1)?;
+                buffer.write_u32(ttl)?;
+
+                let pos = buffer.pos;
+                buffer.write_u16(0)?;
+
+                buffer.write_qname(host)?;
+                let size = buffer.pos - (pos + 2);
+                buffer.set_u16_at(pos, size as u16)?;
+            }
+            DNSRecord::MX {
+                ref domain,
+                priority,
+                ref host,
+                ttl,
+            } => {
+                buffer.write_qname(domain)?;
+                buffer.write_u16(QueryType::MX.to_num())?;
+                buffer.write_u16(1)?;
+                buffer.write_u32(ttl)?;
+
+                let pos = buffer.pos;
+                buffer.write_u16(0)?;
+
+                buffer.write_u16(priority)?;
+                buffer.write_qname(host)?;
+                let size = buffer.pos - (pos + 2);
+                buffer.set_u16_at(pos, size as u16)?;
+            }
+            DNSRecord::AAAA {
+                ref domain,
+                ref addr,
+                ttl,
+            } => {
+                buffer.write_qname(domain)?;
+                buffer.write_u16(QueryType::AAAA.to_num())?;
+                buffer.write_u16(1)?;
+                buffer.write_u32(ttl)?;
+                buffer.write_u16(16)?;
+
+                for octet in &addr.segments() {
+                    buffer.write_u16(*octet)?;
+                }
             }
             DNSRecord::UNKNOWN { .. } => {
                 println!("Skipping record: {:?}", self);
@@ -184,6 +315,10 @@ impl ResultCode {
 pub enum QueryType {
     UNKNOWN(u16),
     A,
+    NS,
+    CNAME,
+    MX,
+    AAAA,
 }
 
 impl QueryType {
@@ -191,12 +326,20 @@ impl QueryType {
         match *self {
             QueryType::UNKNOWN(x) => x,
             QueryType::A => 1,
+            QueryType::NS => 2,
+            QueryType::CNAME => 5,
+            QueryType::MX => 15,
+            QueryType::AAAA => 28,
         }
     }
 
     pub fn from_num(num: u16) -> QueryType {
         match num {
             1 => QueryType::A,
+            2 => QueryType::NS,
+            5 => QueryType::CNAME,
+            15 => QueryType::MX,
+            28 => QueryType::AAAA,
             _ => QueryType::UNKNOWN(num),
         }
     }
@@ -453,6 +596,22 @@ impl BytePacketBuffer {
 }
 
 impl BytePacketBuffer {
+    fn set_u8_at(&mut self, pos: usize, value: u8) -> Result<()> {
+        if pos > self.buf.len() {
+            return Err("end of buffer".into());
+        }
+        self.buf[pos] = value;
+
+        Ok(())
+    }
+
+    fn set_u16_at(&mut self, pos: usize, value: u16) -> Result<()> {
+        self.set_u8_at(pos, (value >> 8) as u8)?;
+        self.set_u8_at(pos + 1, (value & 0xFF) as u8)?;
+
+        Ok(())
+    }
+
     /// Write a single byte to the buffer and increment
     /// the position by one.
     fn write(&mut self, value: u8) -> Result<()> {

@@ -6,7 +6,7 @@ use crate::packet::{DNSQuestion, QueryType};
 mod packet;
 
 fn main() -> Result<()> {
-    let name = "google.com";
+    let name = "www.mariotodorov.com";
     let qtype = QueryType::A;
 
     // Google public DNS
