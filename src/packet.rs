@@ -76,6 +76,50 @@ impl DNSPacket {
     }
 }
 
+impl DNSPacket {
+    pub fn get_random_a(&self) -> Option<Ipv4Addr> {
+        self.answers.iter().find_map(|record| match record {
+            DNSRecord::A { addr, .. } => Some(*addr),
+            _ => None,
+        })
+    }
+
+    /// Returns an iterator of all name servers in the authorities
+    /// section as (domain, host) tuples
+    fn get_ns<'a>(&'a self, qname: &'a str) -> impl Iterator<Item = (&'a str, &'a str)> {
+        self.authorities
+            .iter()
+            .filter_map(|record| match record {
+                DNSRecord::NS { domain, host, .. } => Some((domain.as_str(), host.as_str())),
+                _ => None,
+            })
+            .filter(move |(domain, _)| qname.ends_with(*domain))
+    }
+
+    /// Use when A records come bundled together with the NS records.
+    /// Saves additional lookups.
+    pub fn get_resolved_ns(&self, qname: &str) -> Option<Ipv4Addr> {
+        self.get_ns(qname)
+            // Looks for matching A records in the additional section
+            .flat_map(|(_, host)| {
+                self.resources
+                    .iter()
+                    .filter_map(move |record| match record {
+                        DNSRecord::A { domain, addr, .. } if domain == host => Some(addr),
+                        _ => None,
+                    })
+            })
+            .map(|addr| *addr)
+            .next()
+    }
+
+    /// Use when there are no A records bundled with the NS records
+    /// to perform an additional lookup to the name server
+    pub fn get_unresolved_ns<'a>(&'a self, qname: &'a str) -> Option<&'a str> {
+        self.get_ns(qname).map(|(_, host)| host).next()
+    }
+}
+
 #[derive(Debug)]
 pub enum DNSRecord {
     UNKNOWN {
@@ -288,7 +332,7 @@ impl DNSRecord {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ResultCode {
     NOERROR = 0,
     FORMERR = 1,
