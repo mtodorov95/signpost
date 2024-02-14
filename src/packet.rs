@@ -311,7 +311,7 @@ impl ResultCode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum QueryType {
     UNKNOWN(u16),
     A,
@@ -583,7 +583,7 @@ impl BytePacketBuffer {
         Ok(self.buf[pos])
     }
 
-    fn peek_many(&self, start: usize, len: usize) -> Result<&[u8]> {
+    pub fn peek_many(&self, start: usize, len: usize) -> Result<&[u8]> {
         if start + len >= self.buf.len() {
             return Err("end of buffer".into());
         }
